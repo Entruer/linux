@@ -318,6 +318,10 @@ static int wg_newlink(struct net *src_net, struct net_device *dev,
 	init_rwsem(&wg->static_identity.lock);
 	mutex_init(&wg->socket_update_lock);
 	mutex_init(&wg->device_update_lock);
+	rwlock_init(&wg->peer_sequnce_lock);
+	wg->peer_sequnce = NULL;
+	wg->peer_sequnce_last = NULL;
+	wg->peer_sequnce_num = 0;
 	wg_allowedips_init(&wg->peer_allowedips);
 	wg_cookie_checker_init(&wg->cookie_checker, wg);
 	INIT_LIST_HEAD(&wg->peer_list);

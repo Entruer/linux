@@ -50,6 +50,7 @@ struct wg_peer *wg_peer_create(struct wg_device *wg,
 	wg_prev_queue_init(&peer->tx_queue);
 	wg_prev_queue_init(&peer->rx_queue);
 	rwlock_init(&peer->endpoint_lock);
+	rwlock_init(&peer->srh_lock);
 	kref_init(&peer->refcount);
 	skb_queue_head_init(&peer->staged_packet_queue);
 	wg_noise_reset_last_sent_handshake(&peer->last_sent_handshake);
@@ -58,6 +59,7 @@ struct wg_peer *wg_peer_create(struct wg_device *wg,
 	napi_enable(&peer->napi);
 	list_add_tail(&peer->peer_list, &wg->peer_list);
 	INIT_LIST_HEAD(&peer->allowedips_list);
+	INIT_LIST_HEAD(&peer->srh_list);
 	wg_pubkey_hashtable_add(wg->peer_hashtable, peer);
 	++wg->num_peers;
 	pr_debug("%s: Peer %llu created\n", wg->dev->name, peer->internal_id);

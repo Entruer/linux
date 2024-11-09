@@ -35,6 +35,7 @@ static const struct nla_policy peer_policy[WGPEER_A_MAX + 1] = {
 	[WGPEER_A_PRESHARED_KEY]			= NLA_POLICY_EXACT_LEN(NOISE_SYMMETRIC_KEY_LEN),
 	[WGPEER_A_FLAGS]				= { .type = NLA_U32 },
 	[WGPEER_A_ENDPOINT]				= NLA_POLICY_MIN_LEN(sizeof(struct sockaddr)),
+	[WGPEER_A_SEGMENT_ROUTING]			= { .type = NLA_NESTED },
 	[WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL]	= { .type = NLA_U16 },
 	[WGPEER_A_LAST_HANDSHAKE_TIME]			= NLA_POLICY_EXACT_LEN(sizeof(struct __kernel_timespec)),
 	[WGPEER_A_RX_BYTES]				= { .type = NLA_U64 },
@@ -47,6 +48,10 @@ static const struct nla_policy allowedip_policy[WGALLOWEDIP_A_MAX + 1] = {
 	[WGALLOWEDIP_A_FAMILY]		= { .type = NLA_U16 },
 	[WGALLOWEDIP_A_IPADDR]		= NLA_POLICY_MIN_LEN(sizeof(struct in_addr)),
 	[WGALLOWEDIP_A_CIDR_MASK]	= { .type = NLA_U8 }
+};
+
+static const struct nla_policy srh_policy[WGSRH_A_MAX + 1] = {
+	[WGSRH_A_SEGMENTS]		= NLA_POLICY_MIN_LEN(sizeof(struct in6_addr))
 };
 
 static struct wg_device *lookup_interface(struct nlattr **attrs,
@@ -93,6 +98,23 @@ static int get_allowedips(struct sk_buff *skb, const u8 *ip, u8 cidr,
 	return 0;
 }
 
+static int get_srh(struct sk_buff *skb, struct ipv6_sr_hdr *srh)
+{
+	struct nlattr *srh_nest;
+
+	srh_nest = nla_nest_start(skb, 0);
+	if (!srh_nest)
+		return -EMSGSIZE;
+
+	if (nla_put(skb, WGSRH_A_SEGMENTS, (srh->hdrlen - 1) * 8, srh->segments)) {
+		nla_nest_cancel(skb, srh_nest);
+		return -EMSGSIZE;
+	}
+
+	nla_nest_end(skb, srh_nest);
+	return 0;
+}
+
 struct dump_ctx {
 	struct wg_device *wg;
 	struct wg_peer *next_peer;
@@ -106,8 +128,9 @@ static int
 get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 {
 
-	struct nlattr *allowedips_nest, *peer_nest = nla_nest_start(skb, 0);
+	struct nlattr *allowedips_nest, *srh_nest, *peer_nest = nla_nest_start(skb, 0);
 	struct allowedips_node *allowedips_node = ctx->next_allowedip;
+	struct srh_list *srh_node;
 	bool fail;
 
 	if (!peer_nest)
@@ -155,6 +178,27 @@ get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 				       sizeof(peer->endpoint.addr6),
 				       &peer->endpoint.addr6);
 		read_unlock_bh(&peer->endpoint_lock);
+
+		read_lock_bh(&peer->srh_lock);
+		if (peer->endpoint.addr.sa_family != AF_INET6)
+			goto err;
+		srh_nest = nla_nest_start(skb, WGPEER_A_SEGMENT_ROUTING);
+		if (!srh_nest) {
+			read_unlock_bh(&peer->srh_lock);
+			goto err;
+		}
+
+		list_for_each_entry(srh_node, &peer->srh_list, list){
+			if (get_srh(skb, &srh_node->srh)) {
+				nla_nest_end(skb, srh_nest);
+				read_unlock_bh(&peer->srh_lock);
+				goto err;
+			}
+		}
+		
+		nla_nest_end(skb, srh_nest);
+		read_unlock_bh(&peer->srh_lock);
+
 		if (fail)
 			goto err;
 		allowedips_node =
@@ -354,6 +398,44 @@ static int set_allowedip(struct wg_peer *peer, struct nlattr **attrs)
 	return ret;
 }
 
+static int set_srh(struct wg_peer *peer, struct nlattr **attrs)
+{
+	struct srh_list *srh_node;
+	struct sr6_tlv *tlv;
+	unsigned int tlv_offset;
+	unsigned short data_len = 0;
+
+	if (!attrs[WGSRH_A_SEGMENTS])
+		return -EINVAL;
+
+	data_len = nla_len(attrs[WGSRH_A_SEGMENTS]);
+	if (data_len % 16 != 0)
+		return -EINVAL;
+	srh_node = kmalloc(sizeof(*srh_node) + data_len + sizeof(*tlv) + 6, GFP_KERNEL);
+	
+	if (!srh_node)
+		return -ENOMEM;
+	
+	memcpy(&srh_node->srh.segments, nla_data(attrs[WGSRH_A_SEGMENTS]), data_len);
+	srh_node->srh.hdrlen = data_len / 8 + 1;
+	srh_node->srh.type = IPV6_SRCRT_TYPE_4;
+	srh_node->srh.segments_left = (srh_node->srh.hdrlen - 1) / 2 - 1;
+	srh_node->srh.first_segment = srh_node->srh.segments_left;
+	srh_node->srh.flags = 0;
+
+	tlv_offset = sizeof(srh_node->srh) + ((srh_node->srh.first_segment + 1) << 4);
+	tlv = (struct sr6_tlv *)((unsigned char *)(&srh_node->srh) + tlv_offset);
+	tlv->type = SR6_TLV_SEQUNCE;
+	tlv->len = 6;
+
+	write_lock_bh(&peer->srh_lock);
+	INIT_LIST_HEAD(&srh_node->list);
+	list_add_tail(&srh_node->list, &peer->srh_list);
+	write_unlock_bh(&peer->srh_lock);
+
+	return 0;
+}
+
 static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 {
 	u8 *public_key = NULL, *preshared_key = NULL;
@@ -415,6 +497,9 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 			peer = NULL;
 			goto out;
 		}
+
+		peer->peer_sequnce = 0;
+		
 		/* Take additional reference, as though we've just been
 		 * looked up.
 		 */
@@ -425,6 +510,11 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 		wg_peer_remove(peer);
 		goto out;
 	}
+
+	if(peer->peer_sequnce == 0)
+		peer->peer_sequnce = ++wg->peer_sequnce_num;
+	else
+	 	wg->peer_sequnce_num = peer->peer_sequnce;
 
 	if (preshared_key) {
 		down_write(&peer->handshake.lock);
@@ -444,6 +534,20 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 		} else if (len == sizeof(struct sockaddr_in6) && addr->sa_family == AF_INET6) {
 			endpoint.addr6 = *(struct sockaddr_in6 *)addr;
 			wg_socket_set_peer_endpoint(peer, &endpoint);
+		}
+	}
+
+	if (attrs[WGPEER_A_SEGMENT_ROUTING]){
+		struct nlattr *attr, *srh[WGSRH_A_MAX + 1];
+		int rem;
+
+		nla_for_each_nested(attr, attrs[WGPEER_A_SEGMENT_ROUTING], rem) {
+			ret = nla_parse_nested(srh, WGSRH_A_MAX, attr, srh_policy, NULL);
+			if (ret < 0)
+				goto out;
+			ret = set_srh(peer, srh);
+			if (ret < 0)
+				goto out;
 		}
 	}
 

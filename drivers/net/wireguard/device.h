@@ -50,6 +50,9 @@ struct wg_device {
 	struct allowedips peer_allowedips;
 	struct mutex device_update_lock, socket_update_lock;
 	struct list_head device_list, peer_list;
+	rwlock_t peer_sequnce_lock;
+	struct wg_peer_sequence_list *peer_sequnce, *peer_sequnce_last;
+	u8 peer_sequnce_num;
 	atomic_t handshake_queue_len;
 	unsigned int num_peers, device_update_gen;
 	u32 fwmark;
