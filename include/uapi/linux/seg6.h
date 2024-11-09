@@ -43,6 +43,7 @@ struct ipv6_sr_hdr {
 #define SR6_TLV_OPAQUE		3
 #define SR6_TLV_PADDING		4
 #define SR6_TLV_HMAC		5
+#define SR6_TLV_SEQUNCE		6
 
 #define sr_has_hmac(srh) ((srh)->flags & SR6_FLAG1_HMAC)
 

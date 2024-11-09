@@ -13,6 +13,7 @@
 #include <net/netns/generic.h>
 #include <net/ip6_tunnel.h>
 #include <net/ip6_checksum.h>
+#include <net/seg6.h>
 
 int udp_sock_create6(struct net *net, struct udp_port_cfg *cfg,
 		     struct socket **sockp)
@@ -112,6 +113,51 @@ int udp_tunnel6_xmit_skb(struct dst_entry *dst, struct sock *sk,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(udp_tunnel6_xmit_skb);
+
+int udp_tunnel6_xmit_skb_sr(struct dst_entry *dst, struct sock *sk,
+			 struct sk_buff *skb,
+			 struct net_device *dev,
+			 const struct in6_addr *saddr,
+			 const struct in6_addr *daddr,
+			 __u8 prio, __u8 ttl, __be32 label,
+			 __be16 src_port, __be16 dst_port, bool nocheck,
+			 struct ipv6_sr_hdr *srh)
+{
+	struct udphdr *uh;
+	struct ipv6hdr *ip6h;
+
+	__skb_push(skb, sizeof(*uh));
+	skb_reset_transport_header(skb);
+	uh = udp_hdr(skb);
+
+	uh->dest = dst_port;
+	uh->source = src_port;
+
+	uh->len = htons(skb->len);
+
+	skb_dst_set(skb, dst);
+
+	udp6_set_csum(nocheck, skb, saddr, daddr, skb->len);
+
+	__skb_push(skb, sizeof(*ip6h));
+	skb_reset_network_header(skb);
+	ip6h		  = ipv6_hdr(skb);
+	ip6_flow_hdr(ip6h, prio, label);
+	ip6h->payload_len = htons(skb->len);
+	ip6h->nexthdr     = IPPROTO_UDP;
+	ip6h->hop_limit   = ttl;
+	ip6h->daddr	  = *daddr;
+	ip6h->saddr	  = *saddr;
+
+	if (srh){
+		ip6h->daddr	  = srh->segments[0];
+		seg6_do_srh_inline(skb, srh);
+	}
+
+	ip6tunnel_xmit(sk, skb, dev);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(udp_tunnel6_xmit_skb_sr);
 
 /**
  *      udp_tunnel6_dst_lookup - perform route lookup on UDP tunnel

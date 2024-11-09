@@ -38,7 +38,7 @@ static void wg_packet_send_handshake_initiation(struct wg_peer *peer)
 		atomic64_set(&peer->last_sent_handshake,
 			     ktime_get_coarse_boottime_ns());
 		wg_socket_send_buffer_to_peer(peer, &packet, sizeof(packet),
-					      HANDSHAKE_DSCP);
+					      HANDSHAKE_DSCP, false);
 		wg_timers_handshake_initiated(peer);
 	}
 }
@@ -102,7 +102,7 @@ void wg_packet_send_handshake_response(struct wg_peer *peer)
 				     ktime_get_coarse_boottime_ns());
 			wg_socket_send_buffer_to_peer(peer, &packet,
 						      sizeof(packet),
-						      HANDSHAKE_DSCP);
+						      HANDSHAKE_DSCP, false);
 		}
 	}
 }
@@ -249,7 +249,7 @@ static void wg_packet_create_data_done(struct wg_peer *peer, struct sk_buff *fir
 	skb_list_walk_safe(first, skb, next) {
 		is_keepalive = skb->len == message_data_len(0);
 		if (likely(!wg_socket_send_skb_to_peer(peer, skb,
-				PACKET_CB(skb)->ds) && !is_keepalive))
+				PACKET_CB(skb)->ds, true) && !is_keepalive))
 			data_sent = true;
 	}
 

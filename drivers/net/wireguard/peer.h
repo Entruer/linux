@@ -14,6 +14,7 @@
 #include <linux/netfilter.h>
 #include <linux/spinlock.h>
 #include <linux/kref.h>
+#include <linux/seg6.h>
 #include <net/dst_cache.h>
 
 struct wg_device;
@@ -34,8 +35,23 @@ struct endpoint {
 	};
 };
 
+struct wg_peer_sequence_list {
+	u8 peer_sequnce;
+	u8 u8_sequence_max;
+	u32 u32_sequence_max;
+	struct wg_peer_sequence_list *next;
+};
+
+struct srh_list {
+	struct list_head list;
+	bool sended_once;
+	struct sk_buff *skb;
+	struct ipv6_sr_hdr srh;
+};
+
 struct wg_peer {
 	struct wg_device *device;
+	u8 peer_sequnce;
 	struct prev_queue tx_queue, rx_queue;
 	struct sk_buff_head staged_packet_queue;
 	int serial_work_cpu;
@@ -44,6 +60,7 @@ struct wg_peer {
 	struct endpoint endpoint;
 	struct dst_cache endpoint_cache;
 	rwlock_t endpoint_lock;
+	rwlock_t srh_lock;
 	struct noise_handshake handshake;
 	atomic64_t last_sent_handshake;
 	struct work_struct transmit_handshake_work, clear_peer_work, transmit_packet_work;
@@ -62,6 +79,7 @@ struct wg_peer {
 	struct rcu_head rcu;
 	struct list_head peer_list;
 	struct list_head allowedips_list;
+	struct list_head srh_list;
 	struct napi_struct napi;
 	u64 internal_id;
 };
