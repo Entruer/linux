@@ -4,6 +4,7 @@
  */
 
 #include "device.h"
+#include "linux/compiler.h"
 #include "peer.h"
 #include "socket.h"
 #include "queueing.h"
@@ -16,6 +17,7 @@
 #include <linux/inetdevice.h>
 #include <net/udp_tunnel.h>
 #include <net/ipv6.h>
+#include <net/seg6.h>
 
 static int send4(struct wg_device *wg, struct sk_buff *skb,
 		 struct endpoint *endpoint, u8 ds, struct dst_cache *cache)
@@ -95,7 +97,8 @@ out:
 }
 
 static int send6(struct wg_device *wg, struct sk_buff *skb,
-		 struct endpoint *endpoint, u8 ds, struct dst_cache *cache)
+		 struct endpoint *endpoint, u8 ds, struct dst_cache *cache,
+		 struct ipv6_sr_hdr *srh)
 {
 #if IS_ENABLED(CONFIG_IPV6)
 	struct flowi6 fl = {
@@ -149,9 +152,9 @@ static int send6(struct wg_device *wg, struct sk_buff *skb,
 	}
 
 	skb->ignore_df = 1;
-	udp_tunnel6_xmit_skb(dst, sock, skb, skb->dev, &fl.saddr, &fl.daddr, ds,
+	udp_tunnel6_xmit_skb_sr(dst, sock, skb, skb->dev, &fl.saddr, &fl.daddr, ds,
 			     ip6_dst_hoplimit(dst), 0, fl.fl6_sport,
-			     fl.fl6_dport, false);
+			     fl.fl6_dport, false, srh);
 	goto out;
 
 err:
@@ -176,7 +179,7 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 			    &peer->endpoint_cache);
 	else if (peer->endpoint.addr.sa_family == AF_INET6)
 		ret = send6(peer->device, skb, &peer->endpoint, ds,
-			    &peer->endpoint_cache);
+			    &peer->endpoint_cache, NULL);
 	else
 		dev_kfree_skb(skb);
 	if (likely(!ret))
@@ -224,7 +227,7 @@ int wg_socket_send_buffer_as_reply_to_skb(struct wg_device *wg,
 	if (endpoint.addr.sa_family == AF_INET)
 		ret = send4(wg, skb, &endpoint, 0, NULL);
 	else if (endpoint.addr.sa_family == AF_INET6)
-		ret = send6(wg, skb, &endpoint, 0, NULL);
+		ret = send6(wg, skb, &endpoint, 0, NULL, NULL);
 	/* No other possibilities if the endpoint is valid, which it is,
 	 * as we checked above.
 	 */
@@ -316,11 +319,17 @@ void wg_socket_clear_peer_endpoint_src(struct wg_peer *peer)
 static int wg_receive(struct sock *sk, struct sk_buff *skb)
 {
 	struct wg_device *wg;
+	struct ipv6_sr_hdr *srh;
 
 	if (unlikely(!sk))
 		goto err;
 	wg = sk->sk_user_data;
 	if (unlikely(!wg))
+		goto err;
+	srh = seg6_get_srh(skb, 0);
+	if (unlikely(!srh))
+		goto err;
+	if (unlikely(srh->segments_left != 0))
 		goto err;
 	skb_mark_not_on_list(skb);
 	wg_packet_receive(wg, skb);
