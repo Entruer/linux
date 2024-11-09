@@ -347,10 +347,10 @@ static int wg_receive(struct sock *sk, struct sk_buff *skb)
 	if (unlikely(!wg))
 		goto err;
 	srh = seg6_get_srh(skb, 0);
-	if (unlikely(!srh))
-		goto err;
-	if (unlikely(srh->segments_left != 0))
-		goto err;
+	if (srh)
+		pr_info("%s: Received packet with SRH with segments_left = %d\n",
+			wg->dev->name, srh->segments_left);
+
 	skb_mark_not_on_list(skb);
 	wg_packet_receive(wg, skb);
 	return 0;

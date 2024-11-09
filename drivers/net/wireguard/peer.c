@@ -50,6 +50,7 @@ struct wg_peer *wg_peer_create(struct wg_device *wg,
 	wg_prev_queue_init(&peer->tx_queue);
 	wg_prev_queue_init(&peer->rx_queue);
 	rwlock_init(&peer->endpoint_lock);
+	rwlock_init(&peer->srh_lock);
 	kref_init(&peer->refcount);
 	skb_queue_head_init(&peer->staged_packet_queue);
 	wg_noise_reset_last_sent_handshake(&peer->last_sent_handshake);

@@ -572,6 +572,7 @@ void wg_packet_receive(struct wg_device *wg, struct sk_buff *skb)
 		break;
 	}
 	case cpu_to_le32(MESSAGE_DATA):
+		pr_info("Received data packet\n");
 		PACKET_CB(skb)->ds = ip_tunnel_get_dsfield(ip_hdr(skb), skb);
 		wg_packet_consume_data(wg, skb);
 		break;
