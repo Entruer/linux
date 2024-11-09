@@ -5,11 +5,13 @@
 
 #include "device.h"
 #include "linux/compiler.h"
+#include "linux/spinlock.h"
 #include "peer.h"
 #include "socket.h"
 #include "queueing.h"
 #include "messages.h"
 
+#include <cstddef>
 #include <linux/ctype.h>
 #include <linux/net.h>
 #include <linux/if_vlan.h>
@@ -172,16 +174,34 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 {
 	size_t skb_len = skb->len;
 	int ret = -EAFNOSUPPORT;
+	struct seg_headers *now_srh = &peer->srhs;
 
 	read_lock_bh(&peer->endpoint_lock);
 	if (peer->endpoint.addr.sa_family == AF_INET)
 		ret = send4(peer->device, skb, &peer->endpoint, ds,
 			    &peer->endpoint_cache);
 	else if (peer->endpoint.addr.sa_family == AF_INET6)
-		ret = send6(peer->device, skb, &peer->endpoint, ds,
-			    &peer->endpoint_cache, NULL);
+	{
+		if(now_srh == NULL)
+		{
+			ret = send6(peer->device, skb, &peer->endpoint, ds,
+				    &peer->endpoint_cache, NULL);
+			goto out;
+		}
+		read_lock_bh(&peer->srh_lock);
+		for (; now_srh != NULL; now_srh = peer->srhs.next)
+		{
+			ret = send6(peer->device, skb, &peer->endpoint, ds,
+				    &peer->endpoint_cache, &now_srh->srh);
+			if (!ret)
+				break;
+		}
+		read_unlock_bh(&peer->srh_lock);
+	}
 	else
 		dev_kfree_skb(skb);
+
+out:
 	if (likely(!ret))
 		peer->tx_bytes += skb_len;
 	read_unlock_bh(&peer->endpoint_lock);

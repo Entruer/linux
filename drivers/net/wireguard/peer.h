@@ -50,7 +50,7 @@ struct wg_peer {
 	struct endpoint endpoint;
 	struct dst_cache endpoint_cache;
 	rwlock_t endpoint_lock;
-	struct seg_headers srh;
+	struct seg_headers srhs;
 	rwlock_t srh_lock;
 	struct noise_handshake handshake;
 	atomic64_t last_sent_handshake;
