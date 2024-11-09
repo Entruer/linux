@@ -8,6 +8,7 @@
 #if IS_ENABLED(CONFIG_IPV6)
 #include <net/ipv6.h>
 #include <net/ipv6_stubs.h>
+#include <net/seg6.h>
 #endif
 
 struct udp_port_cfg {
@@ -159,6 +160,15 @@ int udp_tunnel6_xmit_skb(struct dst_entry *dst, struct sock *sk,
 			 const struct in6_addr *daddr,
 			 __u8 prio, __u8 ttl, __be32 label,
 			 __be16 src_port, __be16 dst_port, bool nocheck);
+
+int udp_tunnel6_xmit_skb_sr(struct dst_entry *dst, struct sock *sk,
+			 struct sk_buff *skb,
+			 struct net_device *dev,
+			 const struct in6_addr *saddr,
+			 const struct in6_addr *daddr,
+			 __u8 prio, __u8 ttl, __be32 label,
+			 __be16 src_port, __be16 dst_port, bool nocheck,
+			 struct ipv6_sr_hdr *srh);
 
 void udp_tunnel_sock_release(struct socket *sock);
 
