@@ -174,7 +174,7 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 {
 	size_t skb_len = skb->len;
 	int ret = -EAFNOSUPPORT;
-	struct seg_headers *now_srh = &peer->srhs;
+	struct srh_list *pos;
 
 	read_lock_bh(&peer->endpoint_lock);
 	if (peer->endpoint.addr.sa_family == AF_INET)
@@ -182,17 +182,26 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 			    &peer->endpoint_cache);
 	else if (peer->endpoint.addr.sa_family == AF_INET6)
 	{
-		if(now_srh == NULL)
+		if(list_empty(&peer->srh_list))
 		{
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
 				    &peer->endpoint_cache, NULL);
 			goto out;
 		}
 		read_lock_bh(&peer->srh_lock);
-		for (; now_srh != NULL; now_srh = peer->srhs.next)
+		list_for_each_entry(pos, &peer->srh_list, list)
 		{
+			int seg_count = pos->srh.hdrlen / 2;
+			if (sizeof(pos->srh) != sizeof(struct ipv6_sr_hdr) + sizeof(struct in6_addr) * seg_count)
+			{
+				pr_err("Invalid SRH size\n");
+				continue;
+			}
+			uint32_t random = get_random_u32();
+			struct in6_addr random_addr = {.in6_u.u6_addr32 = {random, random, random, random}};
+			pos->srh.segments[seg_count] = random_addr;
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
-				    &peer->endpoint_cache, &now_srh->srh);
+				    &peer->endpoint_cache, &pos->srh);
 			if (!ret)
 				break;
 		}

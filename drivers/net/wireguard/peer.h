@@ -35,9 +35,9 @@ struct endpoint {
 	};
 };
 
-struct seg_headers {
+struct srh_list {
+	struct list_head list;
 	struct ipv6_sr_hdr srh;
-	struct seg_headers *next;
 };
 
 struct wg_peer {
@@ -50,7 +50,6 @@ struct wg_peer {
 	struct endpoint endpoint;
 	struct dst_cache endpoint_cache;
 	rwlock_t endpoint_lock;
-	struct seg_headers srhs;
 	rwlock_t srh_lock;
 	struct noise_handshake handshake;
 	atomic64_t last_sent_handshake;
@@ -70,6 +69,7 @@ struct wg_peer {
 	struct rcu_head rcu;
 	struct list_head peer_list;
 	struct list_head allowedips_list;
+	struct list_head srh_list;
 	struct napi_struct napi;
 	u64 internal_id;
 };
