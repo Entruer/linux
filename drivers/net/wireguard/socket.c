@@ -191,12 +191,12 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 		read_lock_bh(&peer->srh_lock);
 		list_for_each_entry(pos, &peer->srh_list, list)
 		{
-			int seg_count = pos->srh.hdrlen / 2;
+			int seg_count = pos->srh->hdrlen / 2;
 			uint32_t random = get_random_u32();
 			struct in6_addr random_addr = {.in6_u.u6_addr32 = {random, random, random, random}};
-			pos->srh.segments[seg_count] = random_addr;
+			pos->srh->segments[seg_count] = random_addr;
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
-				    &peer->endpoint_cache, &pos->srh);
+				    &peer->endpoint_cache, pos->srh);
 			if (!ret)
 				break;
 		}

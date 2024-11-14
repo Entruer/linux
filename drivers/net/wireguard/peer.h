@@ -37,7 +37,7 @@ struct endpoint {
 
 struct srh_list {
 	struct list_head list;
-	struct ipv6_sr_hdr srh;
+	struct ipv6_sr_hdr *srh;
 };
 
 struct wg_peer {
