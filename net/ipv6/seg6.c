@@ -104,6 +104,8 @@ struct ipv6_sr_hdr *seg6_get_srh(struct sk_buff *skb, int flags)
 	return srh;
 }
 
+EXPORT_SYMBOL_GPL(seg6_get_srh);
+
 /* Determine if an ICMP invoking packet contains a segment routing
  * header.  If it does, extract the offset to the true destination
  * address, which is in the first segment address.
