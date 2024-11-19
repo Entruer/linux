@@ -11,7 +11,6 @@
 #include "queueing.h"
 #include "messages.h"
 
-#include <cstddef>
 #include <linux/ctype.h>
 #include <linux/net.h>
 #include <linux/if_vlan.h>
