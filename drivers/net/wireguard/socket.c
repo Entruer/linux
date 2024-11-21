@@ -4,12 +4,11 @@
  */
 
 #include "device.h"
-#include "linux/compiler.h"
-#include "linux/spinlock.h"
 #include "peer.h"
 #include "socket.h"
 #include "queueing.h"
 #include "messages.h"
+#include "sequence.h"
 
 #include <linux/ctype.h>
 #include <linux/net.h>
@@ -174,6 +173,7 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 	size_t skb_len = skb->len;
 	int ret = -EAFNOSUPPORT;
 	struct srh_list *pos;
+	static struct in6_addr sequence = {.in6_u.u6_addr32 = {0, 0, 0, 0}};
 
 	read_lock_bh(&peer->endpoint_lock);
 	if (peer->endpoint.addr.sa_family == AF_INET)
@@ -190,10 +190,9 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 		read_lock_bh(&peer->srh_lock);
 		list_for_each_entry(pos, &peer->srh_list, list)
 		{
-			int seg_count = pos->srh->hdrlen / 2;
-			uint32_t random = get_random_u32();
-			struct in6_addr random_addr = {.in6_u.u6_addr32 = {random, random, random, random}};
-			pos->srh->segments[seg_count] = random_addr;
+			int seg_count = pos->srh->hdrlen / 2 - 1;
+			in6_sequence_increment(&sequence);
+			pos->srh->segments[seg_count] = sequence;
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
 				    &peer->endpoint_cache, pos->srh);
 			if (!ret)
@@ -351,9 +350,22 @@ static int wg_receive(struct sock *sk, struct sk_buff *skb)
 		goto err;
 	srh = seg6_get_srh(skb, 0);
 	if (srh)
+	{
 		pr_info("%s: Received packet with SRH with segments_left = %d\n",
 			wg->dev->name, srh->segments_left);
-
+		if (srh->segments_left == 0) {
+			pr_info("%s: End packet received, sequence number = %08x,%08x,%08x,%08x\n",
+				wg->dev->name,
+				be32_to_cpu(srh->segments[srh->hdrlen / 2 - 1]
+						    .in6_u.u6_addr32[3]),
+				be32_to_cpu(srh->segments[srh->hdrlen / 2 - 1]
+						    .in6_u.u6_addr32[2]),
+				be32_to_cpu(srh->segments[srh->hdrlen / 2 - 1]
+						    .in6_u.u6_addr32[1]),
+				be32_to_cpu(srh->segments[srh->hdrlen / 2 - 1]
+						    .in6_u.u6_addr32[0]));
+		}
+	}
 	skb_mark_not_on_list(skb);
 	wg_packet_receive(wg, skb);
 	return 0;
