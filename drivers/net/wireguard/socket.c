@@ -190,11 +190,11 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 		read_lock_bh(&peer->srh_lock);
 		list_for_each_entry(pos, &peer->srh_list, list)
 		{
-			int seg_count = pos->srh->hdrlen / 2 - 1;
+			int seg_count = pos->srh.hdrlen / 2 - 1;
 			in6_sequence_increment(&sequence);
-			pos->srh->segments[seg_count] = sequence;
+			pos->srh.segments[seg_count] = sequence;
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
-				    &peer->endpoint_cache, pos->srh);
+				    &peer->endpoint_cache, &pos->srh);
 			if (!ret)
 				break;
 		}

@@ -51,7 +51,7 @@ static const struct nla_policy allowedip_policy[WGALLOWEDIP_A_MAX + 1] = {
 };
 
 static const struct nla_policy srh_policy[WGSRH_A_MAX + 1] = {
-	[WGSRH_A_SEGMENTS]		= { .type = NLA_UNSPEC }
+	[WGSRH_A_SEGMENTS]		= NLA_POLICY_MIN_LEN(sizeof(struct in6_addr))
 };
 
 static struct wg_device *lookup_interface(struct nlattr **attrs,
@@ -189,7 +189,7 @@ get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 		}
 
 		list_for_each_entry(srh_node, &peer->srh_list, list){
-			if (get_srh(skb, srh_node->srh)) {
+			if (get_srh(skb, &srh_node->srh)) {
 				nla_nest_end(skb, srh_nest);
 				read_unlock_bh(&peer->srh_lock);
 				goto err;
@@ -400,33 +400,38 @@ static int set_allowedip(struct wg_peer *peer, struct nlattr **attrs)
 
 static int set_srh(struct wg_peer *peer, struct nlattr **attrs)
 {
-	int ret = -EINVAL;
 	struct srh_list *srh_node;
 	u16 data_len = 0;
 
-
+	pr_info("Setting SRH\n");
 	if (!attrs[WGSRH_A_SEGMENTS])
-		return ret;
+		return -EINVAL;
 
 	data_len = nla_len(attrs[WGSRH_A_SEGMENTS]);
-	pr_info("Received SRH with %d bytes\n", data_len);
+	pr_info("Received SRH config with %d bytes\n", data_len);
 	if (data_len % 16 != 0)
 		return -EINVAL;
-	srh_node = kmalloc(sizeof(*srh_node) + data_len, GFP_KERNEL);
+	srh_node = kmalloc(sizeof(struct srh_list) + data_len, GFP_KERNEL);
+	
 
-	for (int i = 0; i < data_len; i += 16) {
-		if (!srh_node)
-			return -ENOMEM;
-		memcpy(srh_node->srh, nla_data(attrs[WGSRH_A_SEGMENTS]) + i, 16);
-	}
+	if (!srh_node)
+		return -ENOMEM;
+	
+	memcpy(&srh_node->srh.segments, nla_data(attrs[WGSRH_A_SEGMENTS]), data_len);
+	srh_node->srh.hdrlen = data_len / 16 * 2;
+	srh_node->srh.type = IPV6_SRCRT_TYPE_4;
+	srh_node->srh.segments_left = srh_node->srh.hdrlen / 2 - 1;
+	srh_node->srh.first_segment = srh_node->srh.segments_left;
+	srh_node->srh.flags = 0;
 
 	list_add_tail(&srh_node->list, &peer->srh_list);
 
-	return ret;
+	return 0;
 }
 
 static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 {
+	pr_info("Received peer config netlink package\n");
 	u8 *public_key = NULL, *preshared_key = NULL;
 	struct wg_peer *peer = NULL;
 	u32 flags = 0;
@@ -520,28 +525,15 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 
 	if (attrs[WGPEER_A_SEGMENT_ROUTING]){
 		struct nlattr *attr, *srh[WGSRH_A_MAX + 1];
-		struct srh_list *srh_node;
 		int rem;
+		pr_info("Received SRH config netlink package\n");
 
 		nla_for_each_nested(attr, attrs[WGPEER_A_SEGMENT_ROUTING], rem) {
 			ret = nla_parse_nested(srh, WGSRH_A_MAX, attr, srh_policy, NULL);
+			pr_info("Parsed SRH config netlink package nested, ret: %d\n", ret);
 			if (ret < 0)
 				goto out;
-			if (!list_empty(&peer->srh_list)) {
-				list_for_each_entry(srh_node, &peer->srh_list,list) {
-					list_del(&srh_node->list);
-					kfree(srh_node->srh);
-					kfree(srh_node);
-				}
-			}
-			nla_for_each_nested(attr, attrs[WGPEER_A_SEGMENT_ROUTING], rem) {
-				ret = nla_parse_nested(srh, WGSRH_A_MAX, attr, srh_policy, NULL);
-				if (ret < 0)
-					goto out;
-				ret = set_srh(peer, srh);
-				if (ret < 0)
-					goto out;
-			}
+			ret = set_srh(peer, srh);
 			if (ret < 0)
 				goto out;
 		}
