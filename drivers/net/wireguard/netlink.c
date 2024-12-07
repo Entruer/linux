@@ -413,7 +413,6 @@ static int set_srh(struct wg_peer *peer, struct nlattr **attrs)
 		return -EINVAL;
 	srh_node = kmalloc(sizeof(struct srh_list) + data_len, GFP_KERNEL);
 	
-
 	if (!srh_node)
 		return -ENOMEM;
 	
@@ -424,7 +423,10 @@ static int set_srh(struct wg_peer *peer, struct nlattr **attrs)
 	srh_node->srh.first_segment = srh_node->srh.segments_left;
 	srh_node->srh.flags = 0;
 
+	write_lock_bh(&peer->srh_lock);
+	INIT_LIST_HEAD(&srh_node->list);
 	list_add_tail(&srh_node->list, &peer->srh_list);
+	write_unlock_bh(&peer->srh_lock);
 
 	return 0;
 }

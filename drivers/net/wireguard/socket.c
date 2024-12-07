@@ -183,19 +183,28 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 	{
 		if(list_empty(&peer->srh_list))
 		{
+			pr_info("%s: Sending packet without SRH\n", peer->device->dev->name);
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
 				    &peer->endpoint_cache, NULL);
 			goto out;
 		}
 		read_lock_bh(&peer->srh_lock);
+		in6_sequence_increment(&sequence);
 		list_for_each_entry(pos, &peer->srh_list, list)
 		{
+			pr_info("%s: Sending packet with SRH: segments_left = %d\n",
+				peer->device->dev->name, pos->srh.segments_left);
+			if (pos->srh.hdrlen < 2 || pos->srh.hdrlen % 2)
+			{
+				pr_info("%s: SRH hdrlen is invalid\n", peer->device->dev->name);
+				continue;
+			}
 			int seg_count = pos->srh.hdrlen / 2 - 1;
-			in6_sequence_increment(&sequence);
 			pos->srh.segments[seg_count] = sequence;
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
 				    &peer->endpoint_cache, &pos->srh);
-			if (!ret)
+			pr_info("%s: send6 returned %d\n", peer->device->dev->name, ret);
+			if (ret < 0)
 				break;
 		}
 		read_unlock_bh(&peer->srh_lock);
