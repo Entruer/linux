@@ -168,7 +168,7 @@ out:
 #endif
 }
 
-int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
+int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds, bool multipath)
 {
 	size_t skb_len = skb->len;
 	int ret = -EAFNOSUPPORT;
@@ -190,10 +190,20 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 		}
 		read_lock_bh(&peer->srh_lock);
 		in6_sequence_increment(&sequence);
+		bool sended = false;
+retry:
 		list_for_each_entry(pos, &peer->srh_list, list)
 		{
 			pr_info("%s: Sending packet with SRH: segments_left = %d\n",
 				peer->device->dev->name, pos->srh.segments_left);
+			if (!multipath){
+				if (sended)
+					break;
+				if (pos->sended_once)
+					continue;
+				else 
+					pos->sended_once = true;
+			}
 			if (pos->srh.hdrlen < 2 || pos->srh.hdrlen % 2)
 			{
 				pr_info("%s: SRH hdrlen is invalid\n", peer->device->dev->name);
@@ -203,9 +213,16 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds)
 			pos->srh.segments[seg_count] = sequence;
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
 				    &peer->endpoint_cache, &pos->srh);
+			sended = true;
 			pr_info("%s: send6 returned %d\n", peer->device->dev->name, ret);
 			if (ret < 0)
 				break;
+		}
+		if (!sended){
+			list_for_each_entry(pos, &peer->srh_list, list){
+				pos->sended_once = false;
+			}
+			goto retry;
 		}
 		read_unlock_bh(&peer->srh_lock);
 	}
@@ -221,7 +238,7 @@ out:
 }
 
 int wg_socket_send_buffer_to_peer(struct wg_peer *peer, void *buffer,
-				  size_t len, u8 ds)
+				  size_t len, u8 ds, bool multipath)
 {
 	struct sk_buff *skb = alloc_skb(len + SKB_HEADER_LEN, GFP_ATOMIC);
 
@@ -231,7 +248,7 @@ int wg_socket_send_buffer_to_peer(struct wg_peer *peer, void *buffer,
 	skb_reserve(skb, SKB_HEADER_LEN);
 	skb_set_inner_network_header(skb, 0);
 	skb_put_data(skb, buffer, len);
-	return wg_socket_send_skb_to_peer(peer, skb, ds);
+	return wg_socket_send_skb_to_peer(peer, skb, ds, multipath);
 }
 
 int wg_socket_send_buffer_as_reply_to_skb(struct wg_device *wg,

@@ -37,6 +37,7 @@ struct endpoint {
 
 struct srh_list {
 	struct list_head list;
+	bool sended_once;
 	struct ipv6_sr_hdr srh;
 };
 
