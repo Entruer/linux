@@ -106,7 +106,7 @@ static int get_srh(struct sk_buff *skb, struct ipv6_sr_hdr *srh)
 	if (!srh_nest)
 		return -EMSGSIZE;
 
-	if (nla_put(skb, WGSRH_A_SEGMENTS, srh->hdrlen * 8, srh->segments)) {
+	if (nla_put(skb, WGSRH_A_SEGMENTS, (srh->hdrlen - 1) * 8, srh->segments)) {
 		nla_nest_cancel(skb, srh_nest);
 		return -EMSGSIZE;
 	}
@@ -401,7 +401,9 @@ static int set_allowedip(struct wg_peer *peer, struct nlattr **attrs)
 static int set_srh(struct wg_peer *peer, struct nlattr **attrs)
 {
 	struct srh_list *srh_node;
-	u16 data_len = 0;
+	struct sr6_tlv *tlv;
+	unsigned int tlv_offset;
+	unsigned short data_len = 0;
 
 	pr_info("Setting SRH\n");
 	if (!attrs[WGSRH_A_SEGMENTS])
@@ -411,17 +413,22 @@ static int set_srh(struct wg_peer *peer, struct nlattr **attrs)
 	pr_info("Received SRH config with %d bytes\n", data_len);
 	if (data_len % 16 != 0)
 		return -EINVAL;
-	srh_node = kmalloc(sizeof(struct srh_list) + data_len, GFP_KERNEL);
+	srh_node = kmalloc(sizeof(*srh_node) + data_len + sizeof(*tlv) + 6, GFP_KERNEL);
 	
 	if (!srh_node)
 		return -ENOMEM;
 	
 	memcpy(&srh_node->srh.segments, nla_data(attrs[WGSRH_A_SEGMENTS]), data_len);
-	srh_node->srh.hdrlen = data_len / 16 * 2;
+	srh_node->srh.hdrlen = data_len / 16 + 1;
 	srh_node->srh.type = IPV6_SRCRT_TYPE_4;
-	srh_node->srh.segments_left = srh_node->srh.hdrlen / 2 - 1;
+	srh_node->srh.segments_left = (srh_node->srh.hdrlen - 1) / 2 - 1;
 	srh_node->srh.first_segment = srh_node->srh.segments_left;
 	srh_node->srh.flags = 0;
+
+	tlv_offset = sizeof(srh_node->srh) + ((srh_node->srh.first_segment + 1) << 4);
+	tlv = (struct sr6_tlv *)((unsigned char *)(&srh_node->srh) + tlv_offset);
+	tlv->type = SR6_TLV_SEQUNCE;
+	tlv->len = 6;
 
 	write_lock_bh(&peer->srh_lock);
 	INIT_LIST_HEAD(&srh_node->list);

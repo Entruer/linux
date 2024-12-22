@@ -8,7 +8,6 @@
 #include "socket.h"
 #include "queueing.h"
 #include "messages.h"
-#include "sequence.h"
 
 #include <linux/ctype.h>
 #include <linux/net.h>
@@ -173,7 +172,8 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds,
 	size_t skb_len = skb->len;
 	int ret = -EAFNOSUPPORT;
 	struct srh_list *pos;
-	static struct in6_addr sequence = {.in6_u.u6_addr32 = {0, 0, 0, 0}};
+	static unsigned int sequence = 0;
+	unsigned int *sequence_ptr, tlv_offset;
 
 	read_lock_bh(&peer->endpoint_lock);
 	if (peer->endpoint.addr.sa_family == AF_INET)
@@ -189,7 +189,7 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds,
 			goto out;
 		}
 		read_lock_bh(&peer->srh_lock);
-		in6_sequence_increment(&sequence);
+		sequence++;
 		bool sended = false;
 retry:
 		list_for_each_entry(pos, &peer->srh_list, list)
@@ -204,13 +204,15 @@ retry:
 				else 
 					pos->sended_once = true;
 			}
-			if (pos->srh.hdrlen < 2 || pos->srh.hdrlen % 2)
+			if (pos->srh.hdrlen < 2)
 			{
+				sended = true;
 				pr_info("%s: SRH hdrlen is invalid\n", peer->device->dev->name);
-				continue;
+				break;
 			}
-			int seg_count = pos->srh.hdrlen / 2 - 1;
-			pos->srh.segments[seg_count] = sequence;
+			tlv_offset = sizeof(pos->srh) + ((pos->srh.first_segment + 1) << 4);
+			sequence_ptr = (unsigned int *)((unsigned char *)(&pos->srh) + tlv_offset + 4);
+			*sequence_ptr = sequence;
 			ret = send6(peer->device, skb, &peer->endpoint, ds,
 				    &peer->endpoint_cache, &pos->srh);
 			sended = true;
@@ -368,6 +370,7 @@ static int wg_receive(struct sock *sk, struct sk_buff *skb)
 {
 	struct wg_device *wg;
 	struct ipv6_sr_hdr *srh;
+	pr_info("%s: Received packet\n", skb->dev->name);
 
 	if (unlikely(!sk))
 		goto err;
