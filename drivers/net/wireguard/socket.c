@@ -370,30 +370,20 @@ static int wg_receive(struct sock *sk, struct sk_buff *skb)
 {
 	struct wg_device *wg;
 	struct ipv6_sr_hdr *srh;
-	pr_info("%s: Received packet\n", skb->dev->name);
+	pr_info("%s: Received packet, src = %pISpfsc, dst = %pISpfsc\n",
+		skb->dev->name, &ipv6_hdr(skb)->saddr, &ipv6_hdr(skb)->daddr);
 
 	if (unlikely(!sk))
 		goto err;
 	wg = sk->sk_user_data;
 	if (unlikely(!wg))
 		goto err;
-	srh = seg6_get_srh(skb, 0);
-	if (srh)
+	
+	if (ipv6_hdr(skb)->nexthdr == NEXTHDR_ROUTING)
 	{
-		pr_info("%s: Received packet with SRH with segments_left = %d\n",
-			wg->dev->name, srh->segments_left);
-		if (srh->segments_left == 0) {
-			pr_info("%s: End packet received, sequence number = %08x,%08x,%08x,%08x\n",
-				wg->dev->name,
-				be32_to_cpu(srh->segments[srh->hdrlen / 2 - 1]
-						    .in6_u.u6_addr32[3]),
-				be32_to_cpu(srh->segments[srh->hdrlen / 2 - 1]
-						    .in6_u.u6_addr32[2]),
-				be32_to_cpu(srh->segments[srh->hdrlen / 2 - 1]
-						    .in6_u.u6_addr32[1]),
-				be32_to_cpu(srh->segments[srh->hdrlen / 2 - 1]
-						    .in6_u.u6_addr32[0]));
-		}
+		srh = (struct ipv6_sr_hdr *)((u8 *)ipv6_hdr(skb) + sizeof(struct ipv6hdr));
+		pr_info("%s: SRH with segments_left = %d\n",
+			skb->dev->name, srh->segments_left);
 	}
 	skb_mark_not_on_list(skb);
 	wg_packet_receive(wg, skb);
