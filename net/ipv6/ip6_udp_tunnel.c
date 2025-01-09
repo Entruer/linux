@@ -149,8 +149,10 @@ int udp_tunnel6_xmit_skb_sr(struct dst_entry *dst, struct sock *sk,
 	ip6h->daddr	  = *daddr;
 	ip6h->saddr	  = *saddr;
 
-	if (srh)
+	if (srh){
+		ip6h->daddr	  = srh->segments[0];
 		seg6_do_srh_inline(skb, srh);
+	}
 
 	ip6tunnel_xmit(sk, skb, dev);
 	return 0;
