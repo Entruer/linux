@@ -419,7 +419,7 @@ static int set_srh(struct wg_peer *peer, struct nlattr **attrs)
 		return -ENOMEM;
 	
 	memcpy(&srh_node->srh.segments, nla_data(attrs[WGSRH_A_SEGMENTS]), data_len);
-	srh_node->srh.hdrlen = data_len / 16 + 1;
+	srh_node->srh.hdrlen = data_len / 8 + 1;
 	srh_node->srh.type = IPV6_SRCRT_TYPE_4;
 	srh_node->srh.segments_left = (srh_node->srh.hdrlen - 1) / 2 - 1;
 	srh_node->srh.first_segment = srh_node->srh.segments_left;
@@ -440,10 +440,10 @@ static int set_srh(struct wg_peer *peer, struct nlattr **attrs)
 
 static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 {
-	pr_info("Received peer config netlink package\n");
 	u8 *public_key = NULL, *preshared_key = NULL;
 	struct wg_peer *peer = NULL;
 	u32 flags = 0;
+	static u8 peer_sequnce = 0;
 	int ret;
 
 	ret = -EINVAL;
@@ -500,6 +500,9 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 			peer = NULL;
 			goto out;
 		}
+
+		peer->peer_sequnce = 0;
+		
 		/* Take additional reference, as though we've just been
 		 * looked up.
 		 */
@@ -510,6 +513,12 @@ static int set_peer(struct wg_device *wg, struct nlattr **attrs)
 		wg_peer_remove(peer);
 		goto out;
 	}
+
+	pr_info("Peer sequnce: %d\n", peer_sequnce);
+	if(peer->peer_sequnce == 0)
+		peer->peer_sequnce = ++peer_sequnce;
+	else
+	 	peer_sequnce = peer->peer_sequnce;
 
 	if (preshared_key) {
 		down_write(&peer->handshake.lock);

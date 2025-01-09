@@ -35,14 +35,23 @@ struct endpoint {
 	};
 };
 
+struct wg_peer_sequence_list {
+	u8 peer_sequnce;
+	u8 u8_sequence_max;
+	u32 u32_sequence_max;
+	struct wg_peer_sequence_list *next;
+};
+
 struct srh_list {
 	struct list_head list;
 	bool sended_once;
+	struct sk_buff *skb;
 	struct ipv6_sr_hdr srh;
 };
 
 struct wg_peer {
 	struct wg_device *device;
+	u8 peer_sequnce;
 	struct prev_queue tx_queue, rx_queue;
 	struct sk_buff_head staged_packet_queue;
 	int serial_work_cpu;

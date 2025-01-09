@@ -97,7 +97,7 @@ out:
 
 static int send6(struct wg_device *wg, struct sk_buff *skb,
 		 struct endpoint *endpoint, u8 ds, struct dst_cache *cache,
-		 struct ipv6_sr_hdr *srh)
+		 struct wg_peer *peer, bool multipath)
 {
 #if IS_ENABLED(CONFIG_IPV6)
 	struct flowi6 fl = {
@@ -112,6 +112,14 @@ static int send6(struct wg_device *wg, struct sk_buff *skb,
 	struct dst_entry *dst = NULL;
 	struct sock *sock;
 	int ret = 0;
+	struct srh_list *pos;
+	static unsigned char sequence_8 = 0;
+	static unsigned int sequence_32 = 0;
+	unsigned int tlv_offset;
+	unsigned char *peer_sequence_ptr;
+	unsigned char *sequence_8_ptr;
+	unsigned int *sequence_32_ptr;
+	bool sended;
 
 	skb_mark_not_on_list(skb);
 	skb->dev = wg->dev;
@@ -151,12 +159,75 @@ static int send6(struct wg_device *wg, struct sk_buff *skb,
 	}
 
 	skb->ignore_df = 1;
-	udp_tunnel6_xmit_skb_sr(dst, sock, skb, skb->dev, &fl.saddr, &fl.daddr, ds,
+
+	if(peer == NULL || list_empty(&peer->srh_list))
+	{
+		ret = udp_tunnel6_xmit_skb_sr(dst, sock, skb, skb->dev, &fl.saddr, &fl.daddr, ds,
 			     ip6_dst_hoplimit(dst), 0, fl.fl6_sport,
-			     fl.fl6_dport, false, srh);
+			     fl.fl6_dport, false, NULL);
+		goto out;
+	}
+	read_lock_bh(&peer->srh_lock);
+	if (++sequence_32 == 0)
+		sequence_8++;
+	sended = false;
+	list_for_each_entry(pos, &peer->srh_list, list){
+		pos->skb = skb_copy(skb, GFP_KERNEL);
+	}
+retry:
+	list_for_each_entry(pos, &peer->srh_list, list)
+	{
+		tlv_offset = sizeof(pos->srh) + ((pos->srh.first_segment + 1) << 4);
+		peer_sequence_ptr = (unsigned char *)((unsigned char *)(&pos->srh) + tlv_offset + 2);
+		*peer_sequence_ptr = peer->peer_sequnce;
+		sequence_8_ptr = (unsigned char *)((unsigned char *)(&pos->srh) + tlv_offset + 3);
+		*sequence_8_ptr = sequence_8;
+		sequence_32_ptr = (unsigned int *)((unsigned char *)(&pos->srh) + tlv_offset + 4);
+		*sequence_32_ptr = sequence_32;
+		
+		if (!multipath)
+		{
+			if (sended)
+				break;
+			if (pos->sended_once)
+				continue;
+		}
+		if (pos->srh.hdrlen < 2)
+		{
+			sended = true;
+			pr_info("%s: SRH hdrlen is invalid\n", peer->device->dev->name);
+			break;
+		}
+
+		security_sk_classify_flow(sock, flowi6_to_flowi_common(&fl));
+		fl.daddr = pos->srh.segments[0];
+		endpoint->src6 = fl.saddr = in6addr_any;
+		dst = ipv6_stub->ipv6_dst_lookup_flow(sock_net(sock), sock, &fl,
+					NULL);
+		net_dbg_ratelimited("%s: Sending packet with SRH: segments_left = %d, src = %pI6, dst = %pI6\n",
+			peer->device->dev->name, pos->srh.segments_left, &fl.saddr, &fl.daddr);
+		ret = udp_tunnel6_xmit_skb_sr(dst, sock, pos->skb, skb->dev, &fl.saddr, &fl.daddr, ds,
+			     ip6_dst_hoplimit(dst), 0, fl.fl6_sport,
+			     fl.fl6_dport, false, &pos->srh);
+		pos->sended_once = true;
+		sended = true;
+		pr_info("%s: udp_tunnel6_xmit_skb_sr returned %d\n", peer->device->dev->name, ret);
+		if (ret < 0)
+			break;
+	}
+	if (!sended){
+		list_for_each_entry(pos, &peer->srh_list, list){
+			pos->sended_once = false;
+		}
+		goto retry;
+	}
+	read_unlock_bh(&peer->srh_lock);
 	goto out;
 
 err:
+	list_for_each_entry(pos, &peer->srh_list, list){
+		dev_kfree_skb(pos->skb);
+	}
 	kfree_skb(skb);
 out:
 	rcu_read_unlock_bh();
@@ -171,9 +242,6 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds,
 {
 	size_t skb_len = skb->len;
 	int ret = -EAFNOSUPPORT;
-	struct srh_list *pos;
-	static unsigned int sequence = 0;
-	unsigned int *sequence_ptr, tlv_offset;
 
 	read_lock_bh(&peer->endpoint_lock);
 	if (peer->endpoint.addr.sa_family == AF_INET)
@@ -181,57 +249,12 @@ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb, u8 ds,
 			    &peer->endpoint_cache);
 	else if (peer->endpoint.addr.sa_family == AF_INET6)
 	{
-		if(list_empty(&peer->srh_list))
-		{
-			pr_info("%s: Sending packet without SRH\n", peer->device->dev->name);
-			ret = send6(peer->device, skb, &peer->endpoint, ds,
-				    &peer->endpoint_cache, NULL);
-			goto out;
-		}
-		read_lock_bh(&peer->srh_lock);
-		sequence++;
-		bool sended = false;
-retry:
-		list_for_each_entry(pos, &peer->srh_list, list)
-		{
-			pr_info("%s: Sending packet with SRH: segments_left = %d\n",
-				peer->device->dev->name, pos->srh.segments_left);
-			if (!multipath){
-				if (sended)
-					break;
-				if (pos->sended_once)
-					continue;
-				else 
-					pos->sended_once = true;
-			}
-			if (pos->srh.hdrlen < 2)
-			{
-				sended = true;
-				pr_info("%s: SRH hdrlen is invalid\n", peer->device->dev->name);
-				break;
-			}
-			tlv_offset = sizeof(pos->srh) + ((pos->srh.first_segment + 1) << 4);
-			sequence_ptr = (unsigned int *)((unsigned char *)(&pos->srh) + tlv_offset + 4);
-			*sequence_ptr = sequence;
-			ret = send6(peer->device, skb, &peer->endpoint, ds,
-				    &peer->endpoint_cache, &pos->srh);
-			sended = true;
-			pr_info("%s: send6 returned %d\n", peer->device->dev->name, ret);
-			if (ret < 0)
-				break;
-		}
-		if (!sended){
-			list_for_each_entry(pos, &peer->srh_list, list){
-				pos->sended_once = false;
-			}
-			goto retry;
-		}
-		read_unlock_bh(&peer->srh_lock);
+		ret = send6(peer->device, skb, &peer->endpoint, ds,
+			    &peer->endpoint_cache, peer, multipath);
 	}
 	else
 		dev_kfree_skb(skb);
 
-out:
 	if (likely(!ret))
 		peer->tx_bytes += skb_len;
 	read_unlock_bh(&peer->endpoint_lock);
@@ -277,7 +300,7 @@ int wg_socket_send_buffer_as_reply_to_skb(struct wg_device *wg,
 	if (endpoint.addr.sa_family == AF_INET)
 		ret = send4(wg, skb, &endpoint, 0, NULL);
 	else if (endpoint.addr.sa_family == AF_INET6)
-		ret = send6(wg, skb, &endpoint, 0, NULL, NULL);
+		ret = send6(wg, skb, &endpoint, 0, NULL, NULL, false);
 	/* No other possibilities if the endpoint is valid, which it is,
 	 * as we checked above.
 	 */
@@ -370,7 +393,12 @@ static int wg_receive(struct sock *sk, struct sk_buff *skb)
 {
 	struct wg_device *wg;
 	struct ipv6_sr_hdr *srh;
-	pr_info("%s: Received packet, src = %pISpfsc, dst = %pISpfsc\n",
+	static struct wg_peer_sequence_list *peer_sequnce = NULL, *peer_sequnce_now, *peer_sequnce_last;
+	static rwlock_t peer_sequnce_lock = __RW_LOCK_UNLOCKED(peer_sequnce_lock);
+	unsigned char *peer_sequnce_ptr;
+	unsigned char *sequence_8_ptr;
+	unsigned int *sequence_32_ptr;
+	pr_info("%s: Received packet, src = %pI6, dst = %pI6\n",
 		skb->dev->name, &ipv6_hdr(skb)->saddr, &ipv6_hdr(skb)->daddr);
 
 	if (unlikely(!sk))
@@ -381,9 +409,46 @@ static int wg_receive(struct sock *sk, struct sk_buff *skb)
 	
 	if (ipv6_hdr(skb)->nexthdr == NEXTHDR_ROUTING)
 	{
+		write_lock_bh(&peer_sequnce_lock);
 		srh = (struct ipv6_sr_hdr *)((u8 *)ipv6_hdr(skb) + sizeof(struct ipv6hdr));
 		pr_info("%s: SRH with segments_left = %d\n",
 			skb->dev->name, srh->segments_left);
+		unsigned int tlv_offset = sizeof(*srh) + ((srh->first_segment + 1) << 4);
+		peer_sequnce_ptr = (unsigned char *)((unsigned char *)srh + tlv_offset + 2);
+		sequence_8_ptr = (unsigned char *)((unsigned char *)srh + tlv_offset + 3);
+		sequence_32_ptr = (unsigned int *)((unsigned char *)srh + tlv_offset + 4);
+		pr_info("%s: SRH with peer_sequnce = %d, sequence_8 = %d, sequence_32 = %d\n",
+			skb->dev->name, *peer_sequnce_ptr, *sequence_8_ptr, *sequence_32_ptr);
+		peer_sequnce_now = peer_sequnce;
+		while (peer_sequnce_now != NULL)
+		{
+			if (peer_sequnce_now->peer_sequnce == *peer_sequnce_ptr) {
+				pr_info("%s: Found peer_sequnce = %d\n",
+					skb->dev->name, *peer_sequnce_ptr);
+				break;
+			}
+			peer_sequnce_now = peer_sequnce_now->next;
+		}
+		if (peer_sequnce_now == NULL)
+		{
+			pr_info("%s: Found new peer_sequnce = %d, sequence_8 = %d, sequence_32 = %d\n",
+			skb->dev->name, *peer_sequnce_ptr, *sequence_8_ptr, *sequence_32_ptr);
+			goto nosequence;
+		}
+		if (*sequence_8_ptr >= peer_sequnce_now->u8_sequence_max && *sequence_32_ptr > peer_sequnce_now->u32_sequence_max)
+		{
+			pr_info("%s: Accept packet with peer_sequnce = %d, sequence_8 = %d, sequence_32 = %d, u8_sequence_max = %d, u32_sequence_max = %d\n",
+				skb->dev->name, *peer_sequnce_ptr, *sequence_8_ptr, *sequence_32_ptr, peer_sequnce_now->u8_sequence_max, peer_sequnce_now->u32_sequence_max);
+			peer_sequnce_now->u8_sequence_max = *sequence_8_ptr;
+			peer_sequnce_now->u32_sequence_max = *sequence_32_ptr;
+			write_unlock_bh(&peer_sequnce_lock);
+		}
+		else 
+		{
+			pr_info("%s: Drop packet with peer_sequnce = %d, sequence_8 = %d, sequence_32 = %d, u8_sequence_max = %d, u32_sequence_max = %d\n",
+				skb->dev->name, *peer_sequnce_ptr, *sequence_8_ptr, *sequence_32_ptr, peer_sequnce_now->u8_sequence_max, peer_sequnce_now->u32_sequence_max);
+			goto drop;
+		}
 	}
 	skb_mark_not_on_list(skb);
 	wg_packet_receive(wg, skb);
@@ -391,6 +456,24 @@ static int wg_receive(struct sock *sk, struct sk_buff *skb)
 
 err:
 	kfree_skb(skb);
+	return 0;
+
+nosequence:
+	peer_sequnce_now = kmalloc(sizeof(*peer_sequnce_now), GFP_KERNEL);
+	peer_sequnce_now->peer_sequnce = *peer_sequnce_ptr;
+	peer_sequnce_now->u8_sequence_max = *sequence_8_ptr;
+	peer_sequnce_now->u32_sequence_max = *sequence_32_ptr;
+	peer_sequnce_now->next = NULL;
+	if (peer_sequnce_last != NULL)
+		peer_sequnce_last->next = peer_sequnce_now;
+	else
+		peer_sequnce = peer_sequnce_now;
+	write_unlock_bh(&peer_sequnce_lock);
+	return 0;
+
+drop:
+	skb_mark_not_on_list(skb);
+	write_unlock_bh(&peer_sequnce_lock);
 	return 0;
 }
 
