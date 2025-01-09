@@ -174,6 +174,7 @@ static int send6(struct wg_device *wg, struct sk_buff *skb,
 	list_for_each_entry(pos, &peer->srh_list, list){
 		pos->skb = skb_copy(skb, GFP_KERNEL);
 	}
+	consume_skb(skb);
 retry:
 	list_for_each_entry(pos, &peer->srh_list, list)
 	{
